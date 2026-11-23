@@ -5,6 +5,8 @@ import cors from 'cors';
 import { config } from './config.js';
 import { checkDb } from './db.js';
 import { checkRedis } from './redis.js';
+import { authRouter } from './auth/routes.js';
+import { requireAuth } from './auth/middleware.js';
 
 const app = express();
 
@@ -26,6 +28,12 @@ app.get('/health', async (_req, res) => {
     db: dbOk,
     redis: redisOk,
   });
+});
+
+// Auth routes
+app.use('/api/auth', authRouter);
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ user: req.user });
 });
 
 // Root API placeholder
