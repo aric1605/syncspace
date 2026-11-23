@@ -111,6 +111,7 @@ export function setupCollabServer(httpServer: http.Server) {
       name,
       color,
       isAlive: true,
+      missedPings: 0,
     };
 
     doc.conns.set(ws, meta);
@@ -123,6 +124,9 @@ export function setupCollabServer(httpServer: http.Server) {
 
     // Handle incoming messages
     ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
+      meta.isAlive = true;
+      meta.missedPings = 0;
+
       let uint8: Uint8Array;
       if (Buffer.isBuffer(data)) {
         uint8 = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -137,6 +141,7 @@ export function setupCollabServer(httpServer: http.Server) {
     // Heartbeat pong
     ws.on('pong', () => {
       meta.isAlive = true;
+      meta.missedPings = 0;
     });
 
     // Cleanup on disconnect
@@ -176,12 +181,14 @@ export function setupCollabServer(httpServer: http.Server) {
       const activeUserIds = new Set<string>();
 
       for (const [conn, meta] of doc.conns) {
-        if (!meta.isAlive) {
+        meta.missedPings = (meta.missedPings || 0) + 1;
+
+        // Allow up to 2 missed pings (60-90s) before terminating (avoids killing throttled background tabs)
+        if (meta.missedPings > 2) {
           conn.terminate();
           continue;
         }
 
-        meta.isAlive = false;
         try {
           conn.ping();
         } catch (err) {

@@ -262,7 +262,9 @@ export const EditorPage: React.FC = () => {
       if (!isMountedRef.current) return;
 
       setConnStatus('reconnecting');
-      provider.disconnect();
+      // Set shouldConnect false so y-websocket internal timer does not reconnect with the old ticket
+      provider.shouldConnect = false;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
 
       retryCountRef.current++;
       const backoff = Math.min(1000 * Math.pow(1.5, retryCountRef.current), 15000);

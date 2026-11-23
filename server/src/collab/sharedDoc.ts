@@ -10,6 +10,7 @@ export interface CollabConnectionMeta {
   name: string;
   color: string;
   isAlive: boolean;
+  missedPings?: number;
 }
 
 export class SharedDoc {
