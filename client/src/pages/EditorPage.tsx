@@ -30,6 +30,84 @@ interface WorkspaceData {
   members: WorkspaceMember[];
 }
 
+interface CollabSession {
+  ydoc: Y.Doc;
+  provider: WebsocketProvider;
+}
+
+// Subcomponent that initializes TipTap only after Y.Doc and WebsocketProvider are instantiated
+const WorkspaceEditor: React.FC<{
+  workspace: WorkspaceData;
+  collab: CollabSession;
+  userName: string;
+  userColor: string;
+}> = ({ workspace, collab, userName, userColor }) => {
+  const editor = useEditor(
+    {
+      extensions: [
+        StarterKit.configure({
+          history: false, // Collaboration handles undo/redo
+        }),
+        Collaboration.configure({
+          document: collab.ydoc,
+          field: 'default',
+        }),
+        CollaborationCursor.configure({
+          provider: collab.provider,
+          user: {
+            name: userName,
+            color: userColor,
+          },
+        }),
+      ],
+      editable: workspace.role !== 'viewer',
+    },
+    [workspace.role, collab.ydoc, collab.provider]
+  );
+
+  useEffect(() => {
+    if (editor) {
+      editor.setEditable(workspace.role !== 'viewer');
+    }
+  }, [editor, workspace.role]);
+
+  return (
+    <div style={{ width: '100%', maxWidth: '760px' }}>
+      {workspace.role === 'viewer' && (
+        <div
+          style={{
+            padding: '8px 14px',
+            backgroundColor: 'var(--surface-color)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--text-muted)',
+            fontSize: '0.8125rem',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <span>Read-only mode. You have viewer access to this document.</span>
+        </div>
+      )}
+
+      <EditorToolbar editor={editor} disabled={workspace.role === 'viewer'} />
+
+      <div
+        className="card"
+        style={{
+          minHeight: '600px',
+          padding: '40px 32px',
+          boxShadow: '0 2px 12px rgba(0, 0, 0, 0.08)',
+        }}
+      >
+        <EditorContent editor={editor} />
+      </div>
+    </div>
+  );
+};
+
 export const EditorPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
@@ -39,8 +117,14 @@ export const EditorPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Collab session state
+  const [collab, setCollab] = useState<CollabSession | null>(null);
+
   // Connection state
   const [connStatus, setConnStatus] = useState<ConnectionState>('connecting');
+  const connStatusRef = useRef<ConnectionState>('connecting');
+  connStatusRef.current = connStatus;
+
   const [isServerWaking, setIsServerWaking] = useState(false);
   const [activeUsers, setActiveUsers] = useState<AwarenessUser[]>([]);
 
@@ -51,15 +135,13 @@ export const EditorPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'members' | 'history'>('members');
   const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
 
-  // Yjs and Provider Refs
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
-  const persistenceRef = useRef<IndexeddbPersistence | null>(null);
+  // Connection management refs
   const retryCountRef = useRef(0);
   const isMountedRef = useRef(true);
   const wakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load Workspace Info
+  // Fetch Workspace Info
   const fetchWorkspace = useCallback(async () => {
     if (!id) return;
     try {
@@ -82,91 +164,84 @@ export const EditorPage: React.FC = () => {
     fetchWorkspace();
   }, [fetchWorkspace]);
 
-  // Connect WebSocket with Fresh Ticket & Exponential Backoff
-  const connectWithFreshTicket = useCallback(async () => {
-    if (!id || !isMountedRef.current || !providerRef.current) return;
+  // Connect provider using a fresh ticket
+  const connectProviderWithTicket = useCallback(
+    async (provider: WebsocketProvider) => {
+      if (!id || !isMountedRef.current) return;
 
-    const provider = providerRef.current;
+      // Start waking notice if not connected after 4 seconds
+      if (!wakingTimerRef.current) {
+        wakingTimerRef.current = setTimeout(() => {
+          if (isMountedRef.current && connStatusRef.current !== 'connected') {
+            setIsServerWaking(true);
+          }
+        }, 4000);
+      }
 
-    // Start waking timer if not already running
-    if (!wakingTimerRef.current) {
-      wakingTimerRef.current = setTimeout(() => {
-        if (isMountedRef.current && connStatus !== 'connected') {
-          setIsServerWaking(true);
-        }
-      }, 4000);
-    }
+      try {
+        setConnStatus(retryCountRef.current === 0 ? 'connecting' : 'reconnecting');
 
-    try {
-      setConnStatus(retryCountRef.current === 0 ? 'connecting' : 'reconnecting');
+        const data = await apiFetch<{ ticket: string }>('/api/ws-ticket', {
+          method: 'POST',
+          body: JSON.stringify({ workspaceId: id }),
+        });
 
-      const data = await apiFetch<{ ticket: string }>('/api/ws-ticket', {
-        method: 'POST',
-        body: JSON.stringify({ workspaceId: id }),
-      });
+        if (!isMountedRef.current) return;
 
-      if (!isMountedRef.current) return;
+        // Set ticket in provider URL query params
+        provider.params = { ticket: data.ticket };
+        provider.connect();
+      } catch (err: any) {
+        if (!isMountedRef.current) return;
+        setConnStatus('offline');
 
-      // Update provider parameters with single-use ticket
-      provider.params = { ticket: data.ticket };
-      provider.connect();
-    } catch (err: any) {
-      if (!isMountedRef.current) return;
-      setConnStatus('offline');
+        retryCountRef.current++;
+        const backoff = Math.min(1000 * Math.pow(1.5, retryCountRef.current), 15000);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) {
+            connectProviderWithTicket(provider);
+          }
+        }, backoff);
+      }
+    },
+    [id]
+  );
 
-      // Schedule reconnect with exponential backoff (1s -> 15s)
-      retryCountRef.current++;
-      const backoff = Math.min(1000 * Math.pow(1.5, retryCountRef.current), 15000);
-      setTimeout(() => {
-        if (isMountedRef.current) {
-          connectWithFreshTicket();
-        }
-      }, backoff);
-    }
-  }, [id, connStatus]);
-
-  // Initialize Yjs, Indexeddb, and WebsocketProvider
+  // Initialize Yjs and WebsocketProvider once for this workspace
   useEffect(() => {
     if (!id || !user) return;
     isMountedRef.current = true;
+    retryCountRef.current = 0;
 
     const ydoc = new Y.Doc();
-    ydocRef.current = ydoc;
-
-    // Offline persistence with IndexedDB
     const persistence = new IndexeddbPersistence(`syncspace-${id}`, ydoc);
-    persistenceRef.current = persistence;
 
-    // Derive WS URL
+    // Derive WebSocket base URL
     const envWsUrl = import.meta.env.VITE_WS_URL;
-    let wsBase: string;
-    if (envWsUrl) {
-      wsBase = envWsUrl.replace(/\/+$/, '');
-    } else {
-      const loc = window.location;
-      const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsBase = `${protocol}//${loc.host}`;
-    }
-
+    const defaultWsUrl =
+      window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'ws://localhost:4000'
+        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+    const wsBase = (envWsUrl || defaultWsUrl).replace(/\/+$/, '');
     const wsUrl = `${wsBase}/collab`;
 
-    // Initialize WebsocketProvider with auto-connect disabled
+    // Create provider with auto-connect false
     const provider = new WebsocketProvider(wsUrl, id, ydoc, {
       connect: false,
       params: {},
     });
-    providerRef.current = provider;
 
-    // Set local awareness user
+    // Set local awareness
     provider.awareness.setLocalStateField('user', {
       userId: user.id,
       name: user.name,
       color: user.color,
     });
 
-    // Listen to status changes
+    // Listen for provider status
     provider.on('status', ({ status }: { status: string }) => {
       if (!isMountedRef.current) return;
+
       if (status === 'connected') {
         setConnStatus('connected');
         setIsServerWaking(false);
@@ -178,29 +253,30 @@ export const EditorPage: React.FC = () => {
       } else if (status === 'connecting') {
         setConnStatus('connecting');
       } else {
-        setConnStatus('disconnected' as any);
+        setConnStatus('reconnecting');
       }
     });
 
-    // Listen for disconnect / connection close to fetch fresh ticket
+    // Connection close handler: fetch new ticket and reconnect
     provider.on('connection-close', () => {
       if (!isMountedRef.current) return;
+
       setConnStatus('reconnecting');
       provider.disconnect();
 
-      // Exponential backoff reconnect
       retryCountRef.current++;
       const backoff = Math.min(1000 * Math.pow(1.5, retryCountRef.current), 15000);
-      setTimeout(() => {
+      reconnectTimeoutRef.current = setTimeout(() => {
         if (isMountedRef.current) {
-          connectWithFreshTicket();
+          connectProviderWithTicket(provider);
         }
       }, backoff);
     });
 
-    // Track active collaborators via Awareness
+    // Awareness changes
     provider.awareness.on('change', () => {
       if (!isMountedRef.current) return;
+
       const states = provider.awareness.getStates();
       const uniqueUsers = new Map<string, AwarenessUser>();
 
@@ -216,53 +292,22 @@ export const EditorPage: React.FC = () => {
       setActiveUsers(Array.from(uniqueUsers.values()));
     });
 
-    // Start initial connection
-    connectWithFreshTicket();
+    setCollab({ ydoc, provider });
+
+    // Initiate initial connection
+    connectProviderWithTicket(provider);
 
     return () => {
       isMountedRef.current = false;
       if (wakingTimerRef.current) clearTimeout(wakingTimerRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       provider.disconnect();
       provider.destroy();
       persistence.destroy();
       ydoc.destroy();
+      setCollab(null);
     };
-  }, [id, user, connectWithFreshTicket]);
-
-  // TipTap Editor instance
-  const editor = useEditor(
-    {
-      extensions: [
-        StarterKit.configure({
-          history: false, // Yjs Collaboration extension handles undo/redo
-        }),
-        ...(ydocRef.current && providerRef.current
-          ? [
-              Collaboration.configure({
-                document: ydocRef.current,
-                field: 'default',
-              }),
-              CollaborationCursor.configure({
-                provider: providerRef.current,
-                user: {
-                  name: user?.name || 'Anonymous',
-                  color: user?.color || '#6C7BFF',
-                },
-              }),
-            ]
-          : []),
-      ],
-      editable: workspace ? workspace.role !== 'viewer' : false,
-    },
-    [workspace?.role, ydocRef.current, providerRef.current]
-  );
-
-  // Sync editable status when workspace role updates
-  useEffect(() => {
-    if (editor && workspace) {
-      editor.setEditable(workspace.role !== 'viewer');
-    }
-  }, [editor, workspace?.role]);
+  }, [id, user, connectProviderWithTicket]);
 
   if (isLoading) {
     return (
@@ -416,39 +461,16 @@ export const EditorPage: React.FC = () => {
             minWidth: 0,
           }}
         >
-          <div style={{ width: '100%', maxWidth: '760px' }}>
-            {workspace.role === 'viewer' && (
-              <div
-                style={{
-                  padding: '8px 14px',
-                  backgroundColor: 'var(--surface-color)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius-md)',
-                  color: 'var(--text-muted)',
-                  fontSize: '0.8125rem',
-                  marginBottom: '16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <span>Read-only mode. You have viewer access to this document.</span>
-              </div>
-            )}
-
-            <EditorToolbar editor={editor} disabled={workspace.role === 'viewer'} />
-
-            <div
-              className="card"
-              style={{
-                minHeight: '600px',
-                padding: '40px 32px',
-                boxShadow: '0 2px 12px rgba(0, 0, 0, 0.08)',
-              }}
-            >
-              <EditorContent editor={editor} />
-            </div>
-          </div>
+          {collab && user ? (
+            <WorkspaceEditor
+              workspace={workspace}
+              collab={collab}
+              userName={user.name}
+              userColor={user.color}
+            />
+          ) : (
+            <div style={{ color: 'var(--text-muted)', padding: '40px' }}>Initializing editor...</div>
+          )}
         </main>
 
         {/* Side Panel (Desktop side / Mobile drawer) */}

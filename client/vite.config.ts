@@ -6,5 +6,15 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      },
+      '/collab': {
+        target: 'ws://localhost:4000',
+        ws: true,
+      },
+    },
   },
 });
