@@ -9,6 +9,9 @@ import { authRouter } from './auth/routes.js';
 import { requireAuth } from './auth/middleware.js';
 import { workspaceRouter } from './workspaces/routes.js';
 import { invitesRouter } from './workspaces/invitesRoutes.js';
+import { workspaceRepo } from './workspaces/repository.js';
+import { createWsTicket } from './collab/ticket.js';
+import { setupCollabServer } from './collab/server.js';
 
 const app = express();
 
@@ -42,6 +45,51 @@ app.get('/api/me', requireAuth, (req, res) => {
 app.use('/api/workspaces', workspaceRouter);
 app.use('/api/invites', invitesRouter);
 
+// WebSocket ticket endpoint
+app.post('/api/ws-ticket', requireAuth, async (req, res) => {
+  const { workspaceId } = req.body;
+  if (!workspaceId) {
+    res.status(400).json({
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'workspaceId is required',
+      },
+    });
+    return;
+  }
+
+  try {
+    const membership = await workspaceRepo.getMembership(workspaceId, req.user!.id);
+    if (!membership) {
+      res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'You are not a member of this workspace',
+        },
+      });
+      return;
+    }
+
+    const ticket = await createWsTicket({
+      userId: req.user!.id,
+      workspaceId,
+      role: membership.role,
+      name: req.user!.name,
+      color: req.user!.color,
+    });
+
+    res.json({ ticket });
+  } catch (err: any) {
+    console.error('Failed to create ws ticket:', err);
+    res.status(500).json({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to generate connection ticket',
+      },
+    });
+  }
+});
+
 // Root API placeholder
 app.get('/api', (_req, res) => {
   res.json({ message: 'SyncSpace API is running' });
@@ -59,6 +107,9 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 });
 
 const server = http.createServer(app);
+
+// Initialize real-time WebSocket collab server
+setupCollabServer(server);
 
 // Server startup if invoked directly
 if (process.env.NODE_ENV !== 'test') {
