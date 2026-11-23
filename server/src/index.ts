@@ -7,6 +7,8 @@ import { checkDb } from './db.js';
 import { checkRedis } from './redis.js';
 import { authRouter } from './auth/routes.js';
 import { requireAuth } from './auth/middleware.js';
+import { workspaceRouter } from './workspaces/routes.js';
+import { invitesRouter } from './workspaces/invitesRoutes.js';
 
 const app = express();
 
@@ -35,6 +37,10 @@ app.use('/api/auth', authRouter);
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
+
+// Workspaces and Invites routes
+app.use('/api/workspaces', workspaceRouter);
+app.use('/api/invites', invitesRouter);
 
 // Root API placeholder
 app.get('/api', (_req, res) => {
