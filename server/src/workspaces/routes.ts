@@ -7,6 +7,7 @@ import { workspaceRepo } from './repository.js';
 import { Role } from './roles.js';
 import { getOnlineUsers } from '../presence/presence.js';
 import { config } from '../config.js';
+import { snapshotService } from './snapshots.js';
 
 const router = Router();
 
@@ -320,5 +321,64 @@ router.get('/:id/invites', requireRole('owner'), async (req: Request, res: Respo
     });
   }
 });
+
+// GET /api/workspaces/:id/snapshots (member / viewer+)
+router.get('/:id/snapshots', requireRole('viewer'), async (req: Request, res: Response) => {
+  const workspaceId = req.params.id;
+
+  try {
+    const snapshots = await snapshotService.listSnapshots(workspaceId);
+    res.json({ snapshots });
+  } catch (err: any) {
+    console.error('Failed to list snapshots:', err);
+    res.status(500).json({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to retrieve version history',
+      },
+    });
+  }
+});
+
+// POST /api/workspaces/:id/snapshots (editor+)
+router.post('/:id/snapshots', requireRole('editor'), async (req: Request, res: Response) => {
+  const workspaceId = req.params.id;
+  const label = typeof req.body.label === 'string' ? req.body.label.trim() : undefined;
+
+  try {
+    const snapshot = await snapshotService.createSnapshot(workspaceId, label, req.user!.id);
+    res.status(201).json({ snapshot });
+  } catch (err: any) {
+    console.error('Failed to create snapshot:', err);
+    res.status(500).json({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to save version snapshot',
+      },
+    });
+  }
+});
+
+// POST /api/workspaces/:id/snapshots/:snapId/restore (owner only)
+router.post(
+  '/:id/snapshots/:snapId/restore',
+  requireRole('owner'),
+  async (req: Request, res: Response) => {
+    const { id: workspaceId, snapId } = req.params;
+
+    try {
+      await snapshotService.restoreSnapshot(workspaceId, snapId);
+      res.json({ ok: true, message: 'Document successfully restored to selected snapshot' });
+    } catch (err: any) {
+      console.error('Failed to restore snapshot:', err);
+      res.status(err.message === 'Snapshot not found' ? 404 : 500).json({
+        error: {
+          code: err.message === 'Snapshot not found' ? 'NOT_FOUND' : 'INTERNAL_ERROR',
+          message: err.message || 'Failed to restore snapshot',
+        },
+      });
+    }
+  }
+);
 
 export const workspaceRouter = router;

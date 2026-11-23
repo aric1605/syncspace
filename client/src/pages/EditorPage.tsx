@@ -19,6 +19,8 @@ import {
 } from '../components/ConnectionStatus.js';
 import { ShareModal } from '../components/ShareModal.js';
 import { MembersPanel, WorkspaceMember } from '../components/MembersPanel.js';
+import { SaveVersionModal } from '../components/SaveVersionModal.js';
+import { VersionHistoryPanel } from '../components/VersionHistoryPanel.js';
 
 interface WorkspaceData {
   id: string;
@@ -44,8 +46,10 @@ export const EditorPage: React.FC = () => {
 
   // UI Panels & Modals
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'members' | 'history'>('members');
+  const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
 
   // Yjs and Provider Refs
   const ydocRef = useRef<Y.Doc | null>(null);
@@ -362,9 +366,20 @@ export const EditorPage: React.FC = () => {
         </div>
 
         {/* Right: Status + Avatars + Action buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <ConnectionStatus status={connStatus} />
           <AvatarStack users={activeUsers} />
+
+          {workspace.role !== 'viewer' && (
+            <button
+              onClick={() => setIsSaveModalOpen(true)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.8125rem', height: '34px', minHeight: '34px', padding: '0 12px' }}
+              title="Save a named version snapshot"
+            >
+              Save Version
+            </button>
+          )}
 
           {isOwner && (
             <button
@@ -438,73 +453,95 @@ export const EditorPage: React.FC = () => {
 
         {/* Side Panel (Desktop side / Mobile drawer) */}
         {isSidePanelOpen && (
-          <aside
-            style={{
-              width: '320px',
-              borderLeft: '1px solid var(--border-color)',
-              backgroundColor: 'var(--surface-color)',
-              display: 'flex',
-              flexDirection: 'column',
-              padding: '20px',
-              gap: '20px',
-              overflowY: 'auto',
-            }}
-          >
-            {/* Tabs */}
+          <>
             <div
+              className="side-panel-backdrop"
+              onClick={() => setIsSidePanelOpen(false)}
+              aria-hidden="true"
+            />
+            <aside
+              className="side-panel"
               style={{
+                width: '340px',
+                borderLeft: '1px solid var(--border-color)',
+                backgroundColor: 'var(--surface-color)',
                 display: 'flex',
-                borderBottom: '1px solid var(--border-color)',
-                paddingBottom: '8px',
-                gap: '12px',
+                flexDirection: 'column',
+                padding: '20px',
+                gap: '20px',
+                overflowY: 'auto',
               }}
             >
-              <button
-                onClick={() => setActiveTab('members')}
-                className="btn btn-ghost"
+              {/* Tabs */}
+              <div
                 style={{
-                  padding: '4px 8px',
-                  minHeight: 'unset',
-                  fontSize: '0.875rem',
-                  fontWeight: activeTab === 'members' ? 600 : 400,
-                  color: activeTab === 'members' ? 'var(--accent-color)' : 'var(--text-muted)',
-                  borderBottom: activeTab === 'members' ? '2px solid var(--accent-color)' : 'none',
-                  borderRadius: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  borderBottom: '1px solid var(--border-color)',
+                  paddingBottom: '8px',
                 }}
               >
-                Members
-              </button>
-              <button
-                onClick={() => setActiveTab('history')}
-                className="btn btn-ghost"
-                style={{
-                  padding: '4px 8px',
-                  minHeight: 'unset',
-                  fontSize: '0.875rem',
-                  fontWeight: activeTab === 'history' ? 600 : 400,
-                  color: activeTab === 'history' ? 'var(--accent-color)' : 'var(--text-muted)',
-                  borderBottom: activeTab === 'history' ? '2px solid var(--accent-color)' : 'none',
-                  borderRadius: 0,
-                }}
-              >
-                History
-              </button>
-            </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    onClick={() => setActiveTab('members')}
+                    className="btn btn-ghost"
+                    style={{
+                      padding: '4px 8px',
+                      minHeight: 'unset',
+                      fontSize: '0.875rem',
+                      fontWeight: activeTab === 'members' ? 600 : 400,
+                      color: activeTab === 'members' ? 'var(--accent-color)' : 'var(--text-muted)',
+                      borderBottom: activeTab === 'members' ? '2px solid var(--accent-color)' : 'none',
+                      borderRadius: 0,
+                    }}
+                  >
+                    Members
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('history')}
+                    className="btn btn-ghost"
+                    style={{
+                      padding: '4px 8px',
+                      minHeight: 'unset',
+                      fontSize: '0.875rem',
+                      fontWeight: activeTab === 'history' ? 600 : 400,
+                      color: activeTab === 'history' ? 'var(--accent-color)' : 'var(--text-muted)',
+                      borderBottom: activeTab === 'history' ? '2px solid var(--accent-color)' : 'none',
+                      borderRadius: 0,
+                    }}
+                  >
+                    History
+                  </button>
+                </div>
 
-            {/* Tab content */}
-            {activeTab === 'members' ? (
-              <MembersPanel
-                workspaceId={workspace.id}
-                currentUserRole={workspace.role}
-                members={workspace.members}
-                onMembersUpdated={fetchWorkspace}
-              />
-            ) : (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-                <p>Version history snapshots will be loaded here.</p>
+                <button
+                  onClick={() => setIsSidePanelOpen(false)}
+                  className="btn btn-ghost"
+                  style={{ padding: '2px 6px', minHeight: 'unset', fontSize: '1.25rem' }}
+                  aria-label="Close panel"
+                >
+                  ×
+                </button>
               </div>
-            )}
-          </aside>
+
+              {/* Tab content */}
+              {activeTab === 'members' ? (
+                <MembersPanel
+                  workspaceId={workspace.id}
+                  currentUserRole={workspace.role}
+                  members={workspace.members}
+                  onMembersUpdated={fetchWorkspace}
+                />
+              ) : (
+                <VersionHistoryPanel
+                  workspaceId={workspace.id}
+                  isOwner={isOwner}
+                  refreshTrigger={historyRefreshTrigger}
+                />
+              )}
+            </aside>
+          </>
         )}
       </div>
 
@@ -514,6 +551,20 @@ export const EditorPage: React.FC = () => {
           workspaceId={workspace.id}
           isOpen={isShareModalOpen}
           onClose={() => setIsShareModalOpen(false)}
+        />
+      )}
+
+      {/* Save Version Modal */}
+      {workspace.role !== 'viewer' && (
+        <SaveVersionModal
+          workspaceId={workspace.id}
+          isOpen={isSaveModalOpen}
+          onClose={() => setIsSaveModalOpen(false)}
+          onSaved={() => {
+            setHistoryRefreshTrigger((prev) => prev + 1);
+            setActiveTab('history');
+            setIsSidePanelOpen(true);
+          }}
         />
       )}
     </div>
